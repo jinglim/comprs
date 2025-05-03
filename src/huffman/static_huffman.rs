@@ -1,3 +1,6 @@
+use std::fmt;
+use std::mem;
+
 // Type of the symbols used in the Huffman tree.
 type SymbolType = u16;
 
@@ -5,10 +8,6 @@ type SymbolType = u16;
 type WeightType = u32;
 
 const DEBUG: bool = false;
-
-pub struct StaticHuffman {
-    num_symbols: SymbolType,
-}
 
 // Keeps track of the weight and symbol.
 #[derive(Debug, Copy, Clone)]
@@ -80,22 +79,108 @@ fn heapify_down(heap: &mut [HeapNode], size: usize, insert_node: HeapNode) {
 
 // Check that the heap is valid.
 fn check_heap(heap: &[HeapNode], size: usize) {
-    for i in 0..size {
-        let left = i * 2 + 1;
-        let right = left + 1;
-        if left < size {
-            assert!(heap[i].weight <= heap[left].weight);
-        }
-        if right < size {
-            assert!(heap[i].weight <= heap[right].weight);
+    if DEBUG {
+        for i in 0..size {
+            let left = i * 2 + 1;
+            let right = left + 1;
+            if left < size {
+                assert!(heap[i].weight <= heap[left].weight);
+            }
+            if right < size {
+                assert!(heap[i].weight <= heap[right].weight);
+            }
         }
     }
 }
 
-type CodeLengths = Vec<Vec<SymbolType>>;
+/// Code lengths for each symbol.
+#[derive(Clone)]
+pub struct CodeLengths {
+    // lengths[i] = symbols of length i.
+    lengths: Vec<Vec<SymbolType>>,
+}
+
+impl CodeLengths {
+    /// Sets the maximum code length to `max_length`.
+    pub fn apply_max_length_limit(&mut self, max_length: usize) {
+        println!("apply_max_length_limit: {} max: {}", self, max_length);
+        if max_length >= self.lengths.len() - 1 {
+            return;
+        }
+
+        // Count the extra weight due to moving longest symbols to `max_length`.
+        let mut delta: usize = 0;
+        for level in max_length + 1..self.lengths.len() {
+            let num_symbols = self.lengths[level].len();
+            delta += self.weight_delta(num_symbols, max_length, level);
+
+            // Move the symbols to max_length.
+            let symbols = mem::take(&mut self.lengths[level]);
+            self.lengths[max_length].extend(symbols);
+        }
+
+        // Rebalance the prefix tree, moving some symbols down (i.e. increasing code length).
+        let mut delta_to_adjust = delta;
+        self.adjust(max_length - 1, max_length, 0, &mut delta_to_adjust);
+        assert!(delta_to_adjust == 0);
+
+        self.lengths.truncate(max_length + 1);
+    }
+
+    // Weight changes when moving `num` symbols at `higher` level of the tree to `lower`
+    // level (i.e. shorter code to longer code).
+    fn weight_delta(&self, num: usize, higher: usize, lower: usize) -> usize {
+        let longest = self.lengths.len() - 1;
+        (num << (longest - higher)) - (num << (longest - lower)) 
+    }
+
+    // Adjust the symbols at specified `level`.
+    fn adjust(
+        &mut self,
+        level: usize,
+        max_length: usize,
+        total_adjust: usize,
+        delta: &mut usize,
+    ) {
+        // Recursively go up the tree (decreasing code length) until the highest level where
+        // adjustment is necessary.
+        let num_symbols = self.lengths[level].len();
+
+        // Find the maximum weight adjustment possible from bottom up to this level.
+        let max_adjust = self.weight_delta(num_symbols, level, max_length);
+        let new_total_adjust = total_adjust + max_adjust;
+        if new_total_adjust < *delta as usize {
+            assert!(level > 0, "Not possible to apply specified length limit");
+
+            // Need to recurse upwards.
+            self.adjust(level - 1, max_length, new_total_adjust, delta);
+        }
+
+        // Make adjustments at this level by moving some symbols to (level + 1).
+        if *delta > 0 {
+            let adjustment = self.weight_delta(1, level, level + 1);
+            while *delta > total_adjust && !self.lengths[level].is_empty() {
+                let symbol = self.lengths[level].pop().unwrap();
+                self.lengths[level + 1].push(symbol);
+                *delta -= adjustment;
+            }
+        }
+    }
+}
+
+impl fmt::Display for CodeLengths {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.lengths)
+    }
+}
+
+/// Static Huffman encoder/decoder.
+pub struct StaticHuffman {
+    num_symbols: SymbolType,
+}
 
 impl StaticHuffman {
-    fn new(num_symbols: SymbolType) -> Self {
+    pub fn new(num_symbols: SymbolType) -> Self {
         Self { num_symbols }
     }
 
@@ -163,10 +248,7 @@ impl StaticHuffman {
 
             // Insert the parent node into the heap.
             heapify_down(&mut table, size, parent_node);
-
-            if DEBUG {
-                check_heap(&table, size);
-            }
+            check_heap(&table, size);
         }
 
         // Calculate the level of each internal node by traversing down from the root.
@@ -176,7 +258,7 @@ impl StaticHuffman {
         }
 
         // Output the code lengths.
-        let mut code_lengths: CodeLengths = Vec::new();
+        let mut lengths: Vec<Vec<SymbolType>> = Vec::new();
         for i in 0..symbol_size as SymbolType {
             if DEBUG {
                 println!(
@@ -186,12 +268,12 @@ impl StaticHuffman {
             }
             let parent = parents[i as usize].parent;
             let level = (parents[parent as usize].level + 1) as usize;
-            while level >= code_lengths.len() {
-                code_lengths.push(Vec::new());
+            while level >= lengths.len() {
+                lengths.push(Vec::new());
             }
-            code_lengths[level].push(symbols[i as usize]);
+            lengths[level].push(symbols[i as usize]);
         }
-        code_lengths
+        CodeLengths { lengths }
     }
 }
 
@@ -202,32 +284,30 @@ mod tests {
     use std::collections::HashSet;
 
     // Check that the code lengths are properly assigned such that the huffman tree is full.
-    fn check_code_lengths(code_lengths: &CodeLengths) {
-        assert!(code_lengths[0].len() == 0);
+    fn validate_code_lengths(code_lengths: &CodeLengths) {
+        assert!(code_lengths.lengths[0].len() == 0);
+        let lengths = &code_lengths.lengths;
         let mut sum: u64 = 0;
         let mut weight = 1u64 << 62;
         let mut seen: HashSet<SymbolType> = HashSet::new();
         let mut num_symbols = 0;
-        for i in 1..code_lengths.len() {
-            sum += code_lengths[i].len() as u64 * weight;
+        for i in 1..lengths.len() {
+            sum += lengths[i].len() as u64 * weight;
             weight = weight >> 1;
-            num_symbols += code_lengths[i].len();
+            num_symbols += lengths[i].len();
 
             // Check that the symbols are unique.
-            for symbol in code_lengths[i].iter() {
+            for symbol in lengths[i].iter() {
                 assert!(!seen.contains(symbol));
                 seen.insert(*symbol);
             }
-        }    
-        if num_symbols == 1 {  // Special case for a single symbol.
+        }
+        if num_symbols == 1 {
+            // Special case for a single symbol.
             assert!(sum == 1 << 62);
         } else {
             assert!(sum == 1 << 63);
         }
-    }
-
-    fn print_code_lengths(code_lengths: &CodeLengths) {
-        println!("Code lengths:{:?}", code_lengths);
     }
 
     #[test]
@@ -235,8 +315,8 @@ mod tests {
         let huffman = StaticHuffman::new(12);
         let weights = vec![1, 3, 0, 10, 9, 8, 6, 0, 7, 5, 4, 2];
         let code_lengths = huffman.build_from_weights(&weights);
-        print_code_lengths(&code_lengths);
-        check_code_lengths(&code_lengths);
+        println!("{}", &code_lengths);
+        validate_code_lengths(&code_lengths);
     }
 
     #[test]
@@ -244,8 +324,8 @@ mod tests {
         let huffman = StaticHuffman::new(2);
         let weights = vec![0, 1];
         let code_lengths = huffman.build_from_weights(&weights);
-        print_code_lengths(&code_lengths);
-        check_code_lengths(&code_lengths);
+        println!("{}", &code_lengths);
+        validate_code_lengths(&code_lengths);
     }
 
     #[test]
@@ -253,8 +333,8 @@ mod tests {
         let huffman = StaticHuffman::new(6);
         let weights = vec![2, 2, 2, 2, 4, 4];
         let code_lengths = huffman.build_from_weights(&weights);
-        print_code_lengths(&code_lengths);
-        check_code_lengths(&code_lengths);
+        println!("{}", &code_lengths);
+        validate_code_lengths(&code_lengths);
     }
 
     #[test]
@@ -268,7 +348,90 @@ mod tests {
                 weights.push(weight);
             }
             let code_lengths = huffman.build_from_weights(&weights);
-            check_code_lengths(&code_lengths);
+            validate_code_lengths(&code_lengths);
         }
+    }
+
+    #[test]
+    fn test_apply_max_length_limit() {
+        fn test(code_lengths: &mut CodeLengths, max_lengths: &[usize]) {
+            for max_length in max_lengths {
+                let mut copy = code_lengths.clone();
+                validate_code_lengths(&copy);
+                copy.apply_max_length_limit(*max_length);
+                println!("{}", &copy);
+                assert!(copy.lengths.len() <= *max_length + 1);
+                validate_code_lengths(&copy);
+            }
+        }
+
+        test(
+            &mut CodeLengths {
+                lengths: vec![vec![], vec![0], vec![1], vec![2, 3]],
+            },
+            &[2, 3, 4],
+        );
+
+        test(
+            &mut CodeLengths {
+                lengths: vec![vec![], vec![0], vec![1], vec![2], vec![3], vec![4, 5]],
+            },
+            &[3, 4, 5],
+        );
+
+        test(
+            &mut CodeLengths {
+                lengths: vec![vec![], vec![0], vec![1], vec![], vec![2, 3, 4, 5]],
+            },
+            &[3, 4],
+        );
+
+        test(
+            &mut CodeLengths {
+                lengths: vec![
+                    vec![],
+                    vec![0],
+                    vec![],
+                    vec![1],
+                    vec![],
+                    vec![],
+                    vec![
+                        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                        23, 24, 25,
+                    ],
+                ],
+            },
+            &[5, 6],
+        );
+
+        test(
+            &mut CodeLengths {
+                lengths: vec![
+                    vec![],
+                    vec![0],
+                    vec![1],
+                    vec![2],
+                    vec![3],
+                    vec![4],
+                    vec![5, 6],
+                ],
+            },
+            &[3],
+        );
+
+        test(
+            &mut CodeLengths {
+                lengths: vec![
+                    vec![],
+                    vec![0],
+                    vec![],
+                    vec![],
+                    vec![],
+                    vec![],
+                    (1..33).collect::<Vec<SymbolType>>(),
+                ],
+            },
+            &[6],
+        );
     }
 }
