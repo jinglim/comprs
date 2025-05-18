@@ -4,7 +4,10 @@
 An implementation based on Vitter algorithm.
 
 ## Static Huffman coding
-WIP
+A standard implementation.
 
 ## ANS coding
 WIP
+
+## Author
+jinglim@gmail.com

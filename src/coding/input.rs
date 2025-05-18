@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::File;
+use std::fs;
 use std::io;
 use std::io::Read;
 use std::rc::Rc;
@@ -32,6 +32,9 @@ enum InputSourceType {
 pub struct InputSource {
     source_type: InputSourceType,
 
+    // Number of bytes,
+    num_bytes: u64,
+
     // For file input.
     filename: String,
 
@@ -41,8 +44,11 @@ pub struct InputSource {
 
 impl InputSource {
     pub fn file(filename: &str) -> Self {
+        let metadata = fs::metadata(filename).unwrap();
+        let file_size = metadata.len();        
         Self {
             source_type: InputSourceType::File,
+            num_bytes: file_size,
             filename: filename.to_string(),
             data: Default::default(),
         }
@@ -51,9 +57,14 @@ impl InputSource {
     pub fn memory(data: Vec<u8>) -> Self {
         Self {
             source_type: InputSourceType::Memory,
+            num_bytes: data.len() as u64,
             filename: Default::default(),
             data: Rc::new(data),
         }
+    }
+
+    pub fn len(&self) -> u64 {
+        self.num_bytes
     }
 
     pub fn take_memory(self) -> Vec<u8> {
@@ -64,7 +75,7 @@ impl InputSource {
         let mut frequencies: Vec<u32> = vec![0; 256];
         match &self.source_type {
             InputSourceType::File => {
-                let mut file = File::open(&self.filename).unwrap();
+                let mut file = fs::File::open(&self.filename).unwrap();
                 let mut buffer = [0; 1024];
                 while let Ok(bytes_read) = file.read(&mut buffer) {
                     if bytes_read == 0 {
@@ -87,7 +98,7 @@ impl InputSource {
     pub fn reader(&mut self) -> Box<dyn io::Read> {
         match &self.source_type {
             InputSourceType::File => {
-                let file = File::open(&self.filename).unwrap();
+                let file = fs::File::open(&self.filename).unwrap();
                 Box::new(file)
             }
             InputSourceType::Memory => Box::new(MemReader::new(self.data.clone())),

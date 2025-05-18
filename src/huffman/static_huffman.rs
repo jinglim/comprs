@@ -1,5 +1,4 @@
-use std::fmt;
-use std::mem;
+use crate::huffman::prefix_code::PrefixCode;
 
 // Type of the symbols used in the Huffman tree.
 type SymbolType = u16;
@@ -7,9 +6,10 @@ type SymbolType = u16;
 // Type of the weights used in the Huffman tree.
 type WeightType = u32;
 
+// If true, print more debug information.
 const DEBUG: bool = false;
 
-// Keeps track of the weight and symbol.
+// Keeps track of the weight and symbol of a node in a heap.
 #[derive(Debug, Copy, Clone)]
 struct HeapNode {
     // This is (raw weight of the symbol * 2) + (1 if it's an internal node).
@@ -29,17 +29,20 @@ impl HeapNode {
 // Keeps track of the parent and level of the node.
 #[derive(Clone)]
 struct ParentNode {
+    // The parent node index.
     parent: SymbolType,
+
+    // The tree level.
     level: u8,
 }
 
-// Heapify the node at pos up to the root.
+// Heapify the node at `pos`` up to the root.
 fn heapify_up(heap: &mut [HeapNode], mut pos: usize) {
     let orig_node = heap[pos];
     let weight = orig_node.weight;
 
     while pos > 0 {
-        let parent = (pos - 1) / 2;
+        let parent = (pos - 1) >> 1;
         if heap[parent].weight <= weight {
             break;
         }
@@ -49,11 +52,11 @@ fn heapify_up(heap: &mut [HeapNode], mut pos: usize) {
     heap[pos] = orig_node;
 }
 
-// Heapify down.
+// Replace the head of the heap with `insert_node`.
 fn heapify_down(heap: &mut [HeapNode], size: usize, insert_node: HeapNode) {
     let mut pos = 0;
     loop {
-        let left = pos * 2 + 1;
+        let left = (pos << 1) + 1;
         let right = left + 1;
 
         let smaller = if right < size {
@@ -77,104 +80,7 @@ fn heapify_down(heap: &mut [HeapNode], size: usize, insert_node: HeapNode) {
     heap[pos] = insert_node;
 }
 
-// Check that the heap is valid.
-fn check_heap(heap: &[HeapNode], size: usize) {
-    if DEBUG {
-        for i in 0..size {
-            let left = i * 2 + 1;
-            let right = left + 1;
-            if left < size {
-                assert!(heap[i].weight <= heap[left].weight);
-            }
-            if right < size {
-                assert!(heap[i].weight <= heap[right].weight);
-            }
-        }
-    }
-}
-
-/// Code lengths for each symbol.
-#[derive(Clone)]
-pub struct CodeLengths {
-    // lengths[i] = symbols of length i.
-    lengths: Vec<Vec<SymbolType>>,
-}
-
-impl CodeLengths {
-    /// Sets the maximum code length to `max_length`.
-    pub fn apply_max_length_limit(&mut self, max_length: usize) {
-        println!("apply_max_length_limit: {} max: {}", self, max_length);
-        if max_length >= self.lengths.len() - 1 {
-            return;
-        }
-
-        // Count the extra weight due to moving longest symbols to `max_length`.
-        let mut delta: usize = 0;
-        for level in max_length + 1..self.lengths.len() {
-            let num_symbols = self.lengths[level].len();
-            delta += self.weight_delta(num_symbols, max_length, level);
-
-            // Move the symbols to max_length.
-            let symbols = mem::take(&mut self.lengths[level]);
-            self.lengths[max_length].extend(symbols);
-        }
-
-        // Rebalance the prefix tree, moving some symbols down (i.e. increasing code length).
-        let mut delta_to_adjust = delta;
-        self.adjust(max_length - 1, max_length, 0, &mut delta_to_adjust);
-        assert!(delta_to_adjust == 0);
-
-        self.lengths.truncate(max_length + 1);
-    }
-
-    // Weight changes when moving `num` symbols at `higher` level of the tree to `lower`
-    // level (i.e. shorter code to longer code).
-    fn weight_delta(&self, num: usize, higher: usize, lower: usize) -> usize {
-        let longest = self.lengths.len() - 1;
-        (num << (longest - higher)) - (num << (longest - lower)) 
-    }
-
-    // Adjust the symbols at specified `level`.
-    fn adjust(
-        &mut self,
-        level: usize,
-        max_length: usize,
-        total_adjust: usize,
-        delta: &mut usize,
-    ) {
-        // Recursively go up the tree (decreasing code length) until the highest level where
-        // adjustment is necessary.
-        let num_symbols = self.lengths[level].len();
-
-        // Find the maximum weight adjustment possible from bottom up to this level.
-        let max_adjust = self.weight_delta(num_symbols, level, max_length);
-        let new_total_adjust = total_adjust + max_adjust;
-        if new_total_adjust < *delta as usize {
-            assert!(level > 0, "Not possible to apply specified length limit");
-
-            // Need to recurse upwards.
-            self.adjust(level - 1, max_length, new_total_adjust, delta);
-        }
-
-        // Make adjustments at this level by moving some symbols to (level + 1).
-        if *delta > 0 {
-            let adjustment = self.weight_delta(1, level, level + 1);
-            while *delta > total_adjust && !self.lengths[level].is_empty() {
-                let symbol = self.lengths[level].pop().unwrap();
-                self.lengths[level + 1].push(symbol);
-                *delta -= adjustment;
-            }
-        }
-    }
-}
-
-impl fmt::Display for CodeLengths {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.lengths)
-    }
-}
-
-/// Static Huffman encoder/decoder.
+/// A static Huffman encoder/decoder.
 pub struct StaticHuffman {
     num_symbols: SymbolType,
 }
@@ -184,15 +90,15 @@ impl StaticHuffman {
         Self { num_symbols }
     }
 
-    // Build the huffman code table from the weights of the symbols.
-    // Returns the code lengths for each symbol.
-    pub fn build_from_weights(&self, weights: &[WeightType]) -> CodeLengths {
+    /// Builds the huffman code table from the weights of the symbols.
+    /// Returns the code lengths for each symbol.
+    pub fn build_from_weights(&self, weights: &[WeightType]) -> PrefixCode {
         assert!(weights.len() == self.num_symbols as usize);
 
-        // Use a heap to extract smallest weight nodes.
+        // Use a heap to extract smallest weight nodes while building the tree.
         let mut table: Vec<HeapNode> = Vec::with_capacity(self.num_symbols as usize);
 
-        // Map of non-zero-weight symbols.
+        // Contains the non-zero-weight symbols.
         let mut symbols: Vec<SymbolType> = Vec::with_capacity(self.num_symbols as usize);
 
         // Add non-zero weights to the heap.
@@ -214,7 +120,6 @@ impl StaticHuffman {
         for i in 1..symbol_size {
             heapify_up(&mut table, i);
         }
-        check_heap(&table, symbol_size);
 
         // parent[i] = parent of symbol i.
         let mut parents: Vec<ParentNode> = vec![
@@ -238,9 +143,11 @@ impl StaticHuffman {
             heapify_down(&mut table, size, last_node);
             let right = table[0];
 
-            // Link each child to its parent.
+            // Parent weight = sum of children weight, with last bit (meaning non-leaf) set to 1.
             const MASK: WeightType = !1;
-            let parent_weight = (left.weight & MASK) + (right.weight & MASK) + 1;
+            let parent_weight = (left.weight & MASK) + (right.weight | 1);
+
+            // Link each child to its parent.
             let parent_node = HeapNode::new(parent_index, parent_weight);
             parents[left.symbol as usize].parent = parent_index;
             parents[right.symbol as usize].parent = parent_index;
@@ -248,7 +155,6 @@ impl StaticHuffman {
 
             // Insert the parent node into the heap.
             heapify_down(&mut table, size, parent_node);
-            check_heap(&table, size);
         }
 
         // Calculate the level of each internal node by traversing down from the root.
@@ -273,68 +179,41 @@ impl StaticHuffman {
             }
             lengths[level].push(symbols[i as usize]);
         }
-        CodeLengths { lengths }
+        PrefixCode::new(self.num_symbols, lengths)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::huffman::prefix_code::tests::validate_prefix_code;
     use rand::{rngs, Rng, SeedableRng};
-    use std::collections::HashSet;
-
-    // Check that the code lengths are properly assigned such that the huffman tree is full.
-    fn validate_code_lengths(code_lengths: &CodeLengths) {
-        assert!(code_lengths.lengths[0].len() == 0);
-        let lengths = &code_lengths.lengths;
-        let mut sum: u64 = 0;
-        let mut weight = 1u64 << 62;
-        let mut seen: HashSet<SymbolType> = HashSet::new();
-        let mut num_symbols = 0;
-        for i in 1..lengths.len() {
-            sum += lengths[i].len() as u64 * weight;
-            weight = weight >> 1;
-            num_symbols += lengths[i].len();
-
-            // Check that the symbols are unique.
-            for symbol in lengths[i].iter() {
-                assert!(!seen.contains(symbol));
-                seen.insert(*symbol);
-            }
-        }
-        if num_symbols == 1 {
-            // Special case for a single symbol.
-            assert!(sum == 1 << 62);
-        } else {
-            assert!(sum == 1 << 63);
-        }
-    }
 
     #[test]
     fn test_simple() {
         let huffman = StaticHuffman::new(12);
         let weights = vec![1, 3, 0, 10, 9, 8, 6, 0, 7, 5, 4, 2];
-        let code_lengths = huffman.build_from_weights(&weights);
-        println!("{}", &code_lengths);
-        validate_code_lengths(&code_lengths);
+        let prefix_code = huffman.build_from_weights(&weights);
+        println!("{}", &prefix_code);
+        validate_prefix_code(&prefix_code);
     }
 
     #[test]
     fn test_single_symbol() {
         let huffman = StaticHuffman::new(2);
         let weights = vec![0, 1];
-        let code_lengths = huffman.build_from_weights(&weights);
-        println!("{}", &code_lengths);
-        validate_code_lengths(&code_lengths);
+        let prefix_code = huffman.build_from_weights(&weights);
+        println!("{}", &prefix_code);
+        validate_prefix_code(&prefix_code);
     }
 
     #[test]
     fn test_merge_leaf_nodes_first() {
         let huffman = StaticHuffman::new(6);
         let weights = vec![2, 2, 2, 2, 4, 4];
-        let code_lengths = huffman.build_from_weights(&weights);
-        println!("{}", &code_lengths);
-        validate_code_lengths(&code_lengths);
+        let prefix_code = huffman.build_from_weights(&weights);
+        println!("{}", &prefix_code);
+        validate_prefix_code(&prefix_code);
     }
 
     #[test]
@@ -347,91 +226,8 @@ mod tests {
                 let weight = rng.gen::<WeightType>() / 1000;
                 weights.push(weight);
             }
-            let code_lengths = huffman.build_from_weights(&weights);
-            validate_code_lengths(&code_lengths);
+            let prefix_code = huffman.build_from_weights(&weights);
+            validate_prefix_code(&prefix_code);
         }
-    }
-
-    #[test]
-    fn test_apply_max_length_limit() {
-        fn test(code_lengths: &mut CodeLengths, max_lengths: &[usize]) {
-            for max_length in max_lengths {
-                let mut copy = code_lengths.clone();
-                validate_code_lengths(&copy);
-                copy.apply_max_length_limit(*max_length);
-                println!("{}", &copy);
-                assert!(copy.lengths.len() <= *max_length + 1);
-                validate_code_lengths(&copy);
-            }
-        }
-
-        test(
-            &mut CodeLengths {
-                lengths: vec![vec![], vec![0], vec![1], vec![2, 3]],
-            },
-            &[2, 3, 4],
-        );
-
-        test(
-            &mut CodeLengths {
-                lengths: vec![vec![], vec![0], vec![1], vec![2], vec![3], vec![4, 5]],
-            },
-            &[3, 4, 5],
-        );
-
-        test(
-            &mut CodeLengths {
-                lengths: vec![vec![], vec![0], vec![1], vec![], vec![2, 3, 4, 5]],
-            },
-            &[3, 4],
-        );
-
-        test(
-            &mut CodeLengths {
-                lengths: vec![
-                    vec![],
-                    vec![0],
-                    vec![],
-                    vec![1],
-                    vec![],
-                    vec![],
-                    vec![
-                        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
-                        23, 24, 25,
-                    ],
-                ],
-            },
-            &[5, 6],
-        );
-
-        test(
-            &mut CodeLengths {
-                lengths: vec![
-                    vec![],
-                    vec![0],
-                    vec![1],
-                    vec![2],
-                    vec![3],
-                    vec![4],
-                    vec![5, 6],
-                ],
-            },
-            &[3],
-        );
-
-        test(
-            &mut CodeLengths {
-                lengths: vec![
-                    vec![],
-                    vec![0],
-                    vec![],
-                    vec![],
-                    vec![],
-                    vec![],
-                    (1..33).collect::<Vec<SymbolType>>(),
-                ],
-            },
-            &[6],
-        );
     }
 }

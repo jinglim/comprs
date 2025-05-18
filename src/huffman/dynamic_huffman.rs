@@ -1,10 +1,8 @@
 use crate::base::DebugLog;
 use crate::bits::{BitReader, BitWriter};
 
-use std::io;
-
 // If true, print debug information.
-const DEBUG: bool = true;
+const DEBUG: bool = false;
 
 // If true, print tree details for debugging.
 const DEBUG_TREE: bool = false;
@@ -106,7 +104,9 @@ impl DynamicHuffman {
     // Reset the entire tree, if necessary, to avoid weight overflow.
     fn reset_if_necessary(&mut self) {
         if self.nodes[self.root_node_id() as usize].weight > RESET_WEIGHT {
-            println!("Resetting tree");
+            if DEBUG {
+                println!("Resetting tree");
+            }
             self.nodes.clear();
             Self::initialize_nodes(&mut self.nodes, self.num_symbols);
         }
@@ -481,6 +481,7 @@ impl DynamicHuffman {
 mod tests {
     use super::*;
     use rand::{rngs, Rng, SeedableRng};
+    use std::io;
 
     // Encode a symbol and validate the tree.
     fn encode(huffman: &mut DynamicHuffman, symbol: u16, writer: &mut BitWriter) {

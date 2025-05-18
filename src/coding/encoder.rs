@@ -22,7 +22,7 @@ impl fmt::Display for EncodeResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Encode result: {} bytes read, {} bytes written",
+            "{} bytes read, {} bytes written",
             self.bytes_read, self.bytes_written
         )
     }

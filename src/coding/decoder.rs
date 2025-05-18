@@ -22,7 +22,7 @@ impl fmt::Display for DecodeResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Decode result: {} bytes read, {} bytes written",
+            "{} bytes read, {} bytes written",
             self.bytes_read, self.bytes_written
         )
     }
